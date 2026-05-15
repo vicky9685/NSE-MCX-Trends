@@ -1,11 +1,11 @@
 package com.nsemcx.trading.kafka;
 
 import com.nsemcx.trading.config.KafkaConfig;
+import com.nsemcx.trading.event.PaperTradeEvent;
 import com.nsemcx.trading.model.Alert;
 import com.nsemcx.trading.model.MarketData;
 import com.nsemcx.trading.model.OptionChain;
 import com.nsemcx.trading.model.TradeSignal;
-import com.nsemcx.trading.websocket.TradingWebSocketHandler.PaperTradeEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -67,10 +67,10 @@ public class MarketDataProducer {
     }
 
     /**
-     * Publishes a paper-trade execution event to the {@code paper-trades} topic.
+     * Publishes a paper-trade lifecycle event to the {@code paper-trades} topic.
      */
     public CompletableFuture<SendResult<String, Object>> sendPaperTrade(PaperTradeEvent event) {
-        String key = event.sessionId() + "-" + event.instrumentSymbol();
+        String key = event.sessionId() + "-" + event.symbol();
         return send(KafkaConfig.TOPIC_PAPER_TRADES, key, event);
     }
 

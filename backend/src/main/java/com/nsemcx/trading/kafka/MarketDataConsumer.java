@@ -1,13 +1,13 @@
 package com.nsemcx.trading.kafka;
 
 import com.nsemcx.trading.config.KafkaConfig;
+import com.nsemcx.trading.event.PaperTradeEvent;
 import com.nsemcx.trading.model.Alert;
 import com.nsemcx.trading.model.MarketData;
 import com.nsemcx.trading.model.TradeSignal;
 import com.nsemcx.trading.service.PaperTradingService;
 import com.nsemcx.trading.service.TechnicalAnalysisService;
 import com.nsemcx.trading.websocket.TradingWebSocketHandler;
-import com.nsemcx.trading.websocket.TradingWebSocketHandler.PaperTradeEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -181,8 +181,8 @@ public class MarketDataConsumer {
 
         try {
             if (payload instanceof PaperTradeEvent event) {
-                log.debug("Consuming paper-trade event: type={} instrument={} partition={} offset={}",
-                        event.eventType(), event.instrumentSymbol(), partition, offset);
+                log.debug("Consuming paper-trade event: type={} symbol={} partition={} offset={}",
+                        event.eventType(), event.symbol(), partition, offset);
 
                 paperTradingService.executeTrade(event);
                 webSocketHandler.broadcastPaperTrade(event);

@@ -1,5 +1,8 @@
 package com.nsemcx.trading.websocket;
 
+import com.nsemcx.trading.event.BacktestProgress;
+import com.nsemcx.trading.event.MarketDashboard;
+import com.nsemcx.trading.event.PaperTradeEvent;
 import com.nsemcx.trading.model.Alert;
 import com.nsemcx.trading.model.MarketData;
 import com.nsemcx.trading.model.TradeSignal;
@@ -29,12 +32,12 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class TradingWebSocketHandler {
 
-    private static final String TOPIC_MARKET_DATA   = "/topic/market-data";
-    private static final String TOPIC_SIGNALS       = "/topic/signals";
-    private static final String TOPIC_ALERTS        = "/topic/alerts";
-    private static final String TOPIC_DASHBOARD     = "/topic/dashboard";
-    private static final String TOPIC_PAPER_TRADES  = "/topic/paper-trades";
-    private static final String TOPIC_BACKTEST      = "/topic/backtest";
+    private static final String TOPIC_MARKET_DATA  = "/topic/market-data";
+    private static final String TOPIC_SIGNALS      = "/topic/signals";
+    private static final String TOPIC_ALERTS       = "/topic/alerts";
+    private static final String TOPIC_DASHBOARD    = "/topic/dashboard";
+    private static final String TOPIC_PAPER_TRADES = "/topic/paper-trades";
+    private static final String TOPIC_BACKTEST     = "/topic/backtest";
 
     private final SimpMessagingTemplate messagingTemplate;
 
@@ -88,7 +91,7 @@ public class TradingWebSocketHandler {
     public void broadcastDashboard(MarketDashboard dashboard) {
         try {
             messagingTemplate.convertAndSend(TOPIC_DASHBOARD, dashboard);
-            log.debug("Broadcast dashboard snapshot sentimentScore={}", dashboard.sentimentScore());
+            log.debug("Broadcast dashboard snapshot sentimentScore={}", dashboard.marketSentimentScore());
         } catch (Exception ex) {
             log.error("Failed to broadcast dashboard: {}", ex.getMessage(), ex);
         }
@@ -98,13 +101,13 @@ public class TradingWebSocketHandler {
      * Broadcasts a paper-trading execution event to all subscribers of
      * {@code /topic/paper-trades}.
      *
-     * @param event  any serialisable paper-trade event (entry, exit, position update)
+     * @param event  paper-trade lifecycle event (opened, updated, closed)
      */
     public void broadcastPaperTrade(PaperTradeEvent event) {
         try {
             messagingTemplate.convertAndSend(TOPIC_PAPER_TRADES, event);
-            log.debug("Broadcast paper-trade event type={} instrument={}",
-                    event.eventType(), event.instrumentSymbol());
+            log.debug("Broadcast paper-trade event type={} symbol={}",
+                    event.eventType(), event.symbol());
         } catch (Exception ex) {
             log.error("Failed to broadcast paper-trade event: {}", ex.getMessage(), ex);
         }
@@ -117,85 +120,10 @@ public class TradingWebSocketHandler {
     public void broadcastBacktestProgress(BacktestProgress progress) {
         try {
             messagingTemplate.convertAndSend(TOPIC_BACKTEST, progress);
-            log.debug("Broadcast backtest progress runId={} pct={}%",
-                    progress.runId(), progress.percentComplete());
+            log.debug("Broadcast backtest progress id={} pct={}%",
+                    progress.backtestId(), progress.progressPercent());
         } catch (Exception ex) {
             log.error("Failed to broadcast backtest progress: {}", ex.getMessage(), ex);
         }
     }
-
-    // ── Inner records (payload types) ─────────────────────────────────────────
-
-    /**
-     * Aggregated market dashboard snapshot broadcast to connected clients.
-     *
-     * @param sentimentScore          composite market sentiment score (-100 to +100)
-     * @param vixOutlook              textual interpretation of India VIX level
-     * @param institutionalFlow       FII/DII flow assessment
-     * @param sectorLeaders           top performing sectors with score
-     * @param sectorLaggards          worst performing sectors with score
-     * @param topOpportunities        highest-confidence active trade signals
-     * @param topRisks                key risk factors in plain English
-     * @param capitalProtectionStrategy recommended capital-protection approach
-     */
-    public record MarketDashboard(
-            double sentimentScore,
-            String vixOutlook,
-            String institutionalFlow,
-            java.util.List<SectorAnalysis> sectorLeaders,
-            java.util.List<SectorAnalysis> sectorLaggards,
-            java.util.List<TradeSignal> topOpportunities,
-            java.util.List<String> topRisks,
-            String capitalProtectionStrategy
-    ) {}
-
-    /** Sector performance summary used in the dashboard. */
-    public record SectorAnalysis(
-            String sectorName,
-            double performanceScore,
-            String outlook,
-            java.util.List<String> topStocks
-    ) {}
-
-    /**
-     * Paper-trade lifecycle event.
-     *
-     * @param eventType        ENTRY, EXIT, UPDATE, RESET
-     * @param instrumentSymbol symbol of the traded instrument
-     * @param direction        LONG or SHORT
-     * @param quantity         number of units
-     * @param price            execution price
-     * @param pnl              realised or unrealised P&L
-     * @param sessionId        paper-trading session identifier
-     * @param timestamp        event timestamp
-     */
-    public record PaperTradeEvent(
-            String eventType,
-            String instrumentSymbol,
-            String direction,
-            int quantity,
-            java.math.BigDecimal price,
-            java.math.BigDecimal pnl,
-            String sessionId,
-            java.time.OffsetDateTime timestamp
-    ) {}
-
-    /**
-     * Backtest run progress indicator.
-     *
-     * @param runId           unique backtest run identifier
-     * @param status          RUNNING, COMPLETED, FAILED
-     * @param percentComplete 0-100
-     * @param currentDate     date currently being processed in the simulation
-     * @param totalTrades     number of trades executed so far
-     * @param currentEquity   running portfolio equity value
-     */
-    public record BacktestProgress(
-            String runId,
-            String status,
-            int percentComplete,
-            java.time.LocalDate currentDate,
-            int totalTrades,
-            double currentEquity
-    ) {}
 }

@@ -11,18 +11,22 @@ import {
   Zap,
   Wifi,
   WifiOff,
+  FlaskConical,
+  Play,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTradingStore } from '@/store/tradingStore';
 import { ConnectionStatus } from '@/types';
 
 const NAV_ITEMS = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard', exact: true },
+  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/signals', icon: TrendingUp, label: 'Signals' },
   { to: '/options', icon: Layers, label: 'Options Chain' },
   { to: '/portfolio', icon: Briefcase, label: 'Portfolio' },
   { to: '/risk', icon: Shield, label: 'Risk' },
   { to: '/alerts', icon: Bell, label: 'Alerts' },
+  { to: '/backtesting', icon: FlaskConical, label: 'Backtesting' },
+  { to: '/paper-trading', icon: Play, label: 'Paper Trading' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -72,7 +76,7 @@ export const Sidebar: React.FC = () => {
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
         {NAV_ITEMS.map(({ to, icon: Icon, label }) => {
-          const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to);
+          const isActive = location.pathname === to || location.pathname.startsWith(to + '/');
           const isAlerts = to === '/alerts';
 
           return (

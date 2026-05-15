@@ -4,12 +4,14 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 
 const PAGE_META: Record<string, { title: string; subtitle?: string }> = {
-  '/': { title: 'Market Dashboard', subtitle: 'Real-time NSE/MCX intelligence' },
+  '/dashboard': { title: 'Market Dashboard', subtitle: 'Real-time NSE/MCX intelligence' },
   '/signals': { title: 'Trading Signals', subtitle: 'Multi-agent AI generated signals' },
   '/options': { title: 'Options Chain', subtitle: 'Real-time OI, IV & Greeks' },
-  '/portfolio': { title: 'Portfolio', subtitle: 'Holdings & P&L tracker' },
+  '/portfolio': { title: 'Portfolio', subtitle: 'Paper trading positions & P&L tracker' },
   '/risk': { title: 'Risk Management', subtitle: 'VaR, drawdown & position sizing' },
   '/alerts': { title: 'Alerts Center', subtitle: 'Price, technical & news alerts' },
+  '/backtesting': { title: 'Backtesting', subtitle: 'Historical strategy performance analysis' },
+  '/paper-trading': { title: 'Paper Trading', subtitle: 'Risk-free simulated trading' },
   '/settings': { title: 'Settings', subtitle: 'Broker configuration & preferences' },
 };
 
