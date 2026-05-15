@@ -1,0 +1,265 @@
+version: "3.9"
+
+networks:
+  trading-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-data:
+  ollama-models:
+  pgadmin-data:
+
+services:
+  # ─── PostgreSQL with pgvector ───────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: nse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trading_db}
+      POSTGRES_USER: ${POSTGRES_USER:-trading_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - trading-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trading_user} -d ${POSTGRES_DB:-trading_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ─── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: nse-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret} --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - trading-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Zookeeper ──────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: nse-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    networks:
+      - trading-net
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── Kafka ──────────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: nse-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_NUM_PARTITIONS: 4
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      # Auto-create required topics on startup
+      KAFKA_CREATE_TOPICS: "market-data:4:1,trade-signals:4:1,alerts:2:1,option-chain:4:1,instrument-updates:2:1"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    networks:
+      - trading-net
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ─── Kafka UI ────────────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: nse-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: nse-mcx-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      SERVER_SERVLET_CONTEXT_PATH: /kafka-ui
+    ports:
+      - "${KAFKA_UI_PORT:-8090}:8080"
+    networks:
+      - trading-net
+
+  # ─── Ollama (Local LLM) ──────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: nse-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: 24h
+      OLLAMA_NUM_PARALLEL: 2
+      OLLAMA_MAX_LOADED_MODELS: 2
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    networks:
+      - trading-net
+    deploy:
+      resources:
+        limits:
+          memory: ${OLLAMA_MEMORY_LIMIT:-6g}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ─── Spring Boot Backend ─────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../infrastructure/docker/Dockerfile.backend
+    image: nse-mcx-backend:latest
+    container_name: nse-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      # Database
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-trading_db}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-trading_user}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      # Redis
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      SPRING_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
+      # Kafka
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      # Ollama
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      # Broker APIs
+      BROKER_ZERODHA_API_KEY: ${BROKER_ZERODHA_API_KEY}
+      BROKER_ZERODHA_API_SECRET: ${BROKER_ZERODHA_API_SECRET}
+      BROKER_ZERODHA_ACCESS_TOKEN: ${BROKER_ZERODHA_ACCESS_TOKEN}
+      BROKER_ALICEBLUE_API_KEY: ${BROKER_ALICEBLUE_API_KEY}
+      BROKER_ALICEBLUE_USER_ID: ${BROKER_ALICEBLUE_USER_ID}
+      BROKER_ALICEBLUE_API_SECRET: ${BROKER_ALICEBLUE_API_SECRET}
+      BROKER_BONANZA_API_KEY: ${BROKER_BONANZA_API_KEY}
+      BROKER_BONANZA_API_SECRET: ${BROKER_BONANZA_API_SECRET}
+      # Market Data
+      YAHOO_FINANCE_API_KEY: ${YAHOO_FINANCE_API_KEY}
+      NSE_DATA_API_URL: ${NSE_DATA_API_URL:-https://www.nseindia.com/api}
+      # Security
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-86400000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # JVM
+      JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.net.preferIPv4Stack=true}
+      # Profiles
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    networks:
+      - trading-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ─── React Frontend ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../infrastructure/docker/Dockerfile.frontend
+    image: nse-mcx-frontend:latest
+    container_name: nse-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8080/ws}
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - trading-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # ─── pgAdmin ─────────────────────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: nse-pgadmin
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@trading.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-pgadmin_secret}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    networks:
+      - trading-net

@@ -1,0 +1,201 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 10
+
+spring:
+  application:
+    name: nse-mcx-trading
+  threads:
+    virtual:
+      enabled: true
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:trading_db}
+    username: ${DB_USER:trading_user}
+    password: ${DB_PASSWORD:trading_pass}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 300000
+      connection-timeout: 20000
+      pool-name: TradingHikariPool
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          lob:
+            non_contextual_creation: true
+        temp:
+          use_jdbc_metadata_defaults: false
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+    out-of-order: false
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 1
+    consumer:
+      group-id: trading-group
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      auto-offset-reset: latest
+      enable-auto-commit: false
+      properties:
+        spring.json.trusted.packages: "com.nsemcx.trading.*"
+        spring.json.use.type.headers: false
+    listener:
+      ack-mode: MANUAL_IMMEDIATE
+      concurrency: 3
+
+  ai:
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        model: ${OLLAMA_MODEL:llama3.2}
+        options:
+          temperature: 0.3
+          top-p: 0.9
+          num-predict: 2048
+    openai:
+      api-key: ${OPENAI_API_KEY:dummy-key-fallback}
+      chat:
+        options:
+          model: gpt-4o-mini
+          temperature: 0.3
+          max-tokens: 2048
+
+  security:
+    user:
+      name: ${SECURITY_USER:admin}
+      password: ${SECURITY_PASSWORD:admin123}
+
+  cache:
+    type: simple
+    cache-names:
+      - instruments
+      - market-data
+      - signals
+      - fundamentals
+
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false
+    deserialization:
+      fail-on-unknown-properties: false
+    default-property-inclusion: non_null
+    time-zone: Asia/Kolkata
+
+logging:
+  level:
+    root: INFO
+    com.nsemcx.trading: DEBUG
+    org.springframework.ai: INFO
+    org.springframework.kafka: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql: WARN
+    org.flywaydb: INFO
+    okhttp3: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/trading-backend.log
+    max-size: 100MB
+    max-history: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,env,beans,mappings
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: ${spring.application.name}
+
+# Custom application properties
+yahoo:
+  finance:
+    base-url: https://query1.finance.yahoo.com
+    v8-url: https://query1.finance.yahoo.com/v8/finance/chart
+    v10-url: https://query1.finance.yahoo.com/v10/finance/quoteSummary
+    rate-limit-delay-ms: 1000
+    max-retries: 3
+    timeout-seconds: 30
+
+brokers:
+  zerodha:
+    enabled: false
+    api-key: ${ZERODHA_API_KEY:}
+    api-secret: ${ZERODHA_API_SECRET:}
+    base-url: https://api.kite.trade
+  aliceblue:
+    enabled: false
+    api-key: ${ALICEBLUE_API_KEY:}
+    user-id: ${ALICEBLUE_USER_ID:}
+    base-url: https://ant.aliceblueonline.com/rest/AliceBlueAPIService/api
+  bonanza:
+    enabled: false
+    api-key: ${BONANZA_API_KEY:}
+    base-url: https://api.bonanzaonline.com
+
+trading:
+  market-hours:
+    nse-open: "09:15"
+    nse-close: "15:30"
+    mcx-open: "09:00"
+    mcx-close: "23:30"
+    timezone: "Asia/Kolkata"
+  risk:
+    default-risk-percent: 2.0
+    max-portfolio-risk: 10.0
+    var-confidence: 0.95
+  instruments:
+    nse:
+      - RELIANCE.NS
+      - TCS.NS
+      - HDFCBANK.NS
+      - INFY.NS
+      - ICICIBANK.NS
+      - SBIN.NS
+      - ^NSEI
+      - ^NSEBANK
+    mcx:
+      - GC=F
+      - SI=F
+      - CL=F
+      - NG=F
+      - HG=F

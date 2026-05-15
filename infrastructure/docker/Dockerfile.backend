@@ -1,0 +1,66 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: Build – Maven + Eclipse Temurin 21
+# ─────────────────────────────────────────────────────────────────────────────
+FROM maven:3.9-eclipse-temurin-21 AS builder
+
+WORKDIR /build
+
+# Copy only the POM first to leverage Docker layer caching for dependencies.
+# This layer is only invalidated when pom.xml changes, not when source changes.
+COPY pom.xml .
+RUN mvn dependency:go-offline -B --no-transfer-progress
+
+# Copy source and build, skipping tests (tests run in CI pipeline separately)
+COPY src ./src
+RUN mvn package -DskipTests -B --no-transfer-progress
+
+# Extract layered JAR for optimal Docker layer caching in the runtime image
+RUN java -Djarmode=layertools -jar target/*.jar extract --destination /build/extracted
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: Runtime – Eclipse Temurin 21 JRE Alpine
+# ─────────────────────────────────────────────────────────────────────────────
+FROM eclipse-temurin:21-jre-alpine AS runtime
+
+# Install curl for Docker healthcheck
+RUN apk add --no-cache curl tzdata && \
+    cp /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && \
+    echo "Asia/Kolkata" > /etc/timezone && \
+    apk del tzdata
+
+# Create non-root user for security
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup
+
+WORKDIR /app
+
+# Copy layered JAR contents in dependency-first order for maximum cache reuse
+# Layers change least → most frequently: dependencies, spring-boot-loader, snapshot-dependencies, application
+COPY --from=builder --chown=appuser:appgroup /build/extracted/dependencies/ ./
+COPY --from=builder --chown=appuser:appgroup /build/extracted/spring-boot-loader/ ./
+COPY --from=builder --chown=appuser:appgroup /build/extracted/snapshot-dependencies/ ./
+COPY --from=builder --chown=appuser:appgroup /build/extracted/application/ ./
+
+USER appuser
+
+EXPOSE 8080
+
+# JVM options:
+#   -XX:+UseContainerSupport          : Respect container CPU/memory limits
+#   -XX:MaxRAMPercentage=75.0         : Use 75% of container RAM for heap
+#   -XX:+UseZGC                       : Low-latency GC (Java 21 GA)
+#   -XX:+ZGenerational                : Generational ZGC (Java 21+)
+#   -Dspring.threads.virtual.enabled  : Enable virtual threads (Project Loom)
+#   --enable-preview                  : Required for some Java 21 preview features
+ENTRYPOINT ["sh", "-c", "exec java \
+  -XX:+UseContainerSupport \
+  -XX:MaxRAMPercentage=75.0 \
+  -XX:InitialRAMPercentage=50.0 \
+  -XX:+UseZGC \
+  -XX:+ZGenerational \
+  -Dspring.threads.virtual.enabled=true \
+  -Djava.net.preferIPv4Stack=true \
+  -Dfile.encoding=UTF-8 \
+  -Duser.timezone=Asia/Kolkata \
+  ${JAVA_OPTS} \
+  org.springframework.boot.loader.launch.JarLauncher"]
