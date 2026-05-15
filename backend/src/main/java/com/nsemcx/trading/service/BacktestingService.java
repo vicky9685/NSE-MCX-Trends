@@ -357,12 +357,15 @@ public class BacktestingService {
                     + " in range " + result.getStartDate() + " to " + result.getEndDate());
         }
 
+        // Simulation state: entity under construction + SL/target (not stored in entity until closed)
+        record OpenPosition(BacktestTrade trade, double target, double stopLoss) {}
+
         double capital = initialCapital.doubleValue();
         double peakCapital = capital;
         double maxDrawdown = 0.0;
         List<double[]> dailyReturns = new ArrayList<>();
         List<BacktestTrade> trades = new ArrayList<>();
-        BacktestTrade openTrade = null;
+        OpenPosition openPos = null;
 
         double commissionPct = cfg.commissionPercent() / 100.0;
         double slippagePct = cfg.slippagePercent() / 100.0;
@@ -377,27 +380,27 @@ public class BacktestingService {
             List<MarketData> window = allData.subList(Math.max(0, i - 200), i + 1);
 
             // Check if open trade should be closed
-            if (openTrade != null) {
+            if (openPos != null) {
+                BacktestTrade openTrade = openPos.trade();
                 double high = bar.getHigh().doubleValue();
                 double low = bar.getLow().doubleValue();
                 double exitPrice = 0;
                 ExitReason exitReason = null;
 
                 if (openTrade.isLong()) {
-                    if (low <= openTrade.getStoploss().doubleValue()) {
-                        exitPrice = openTrade.getStoploss().doubleValue();
+                    if (low <= openPos.stopLoss()) {
+                        exitPrice = openPos.stopLoss();
                         exitReason = ExitReason.SL_HIT;
-                    } else if (high >= openTrade.getExitPrice().doubleValue()) {
-                        // exitPrice used as target storage
-                        exitPrice = openTrade.getExitPrice().doubleValue();
+                    } else if (high >= openPos.target()) {
+                        exitPrice = openPos.target();
                         exitReason = ExitReason.TARGET_HIT;
                     }
                 } else {
-                    if (high >= openTrade.getStoploss().doubleValue()) {
-                        exitPrice = openTrade.getStoploss().doubleValue();
+                    if (high >= openPos.stopLoss()) {
+                        exitPrice = openPos.stopLoss();
                         exitReason = ExitReason.SL_HIT;
-                    } else if (low <= openTrade.getExitPrice().doubleValue()) {
-                        exitPrice = openTrade.getExitPrice().doubleValue();
+                    } else if (low <= openPos.target()) {
+                        exitPrice = openPos.target();
                         exitReason = ExitReason.TARGET_HIT;
                     }
                 }
@@ -422,7 +425,7 @@ public class BacktestingService {
 
                     capital += pnl;
                     dailyReturns.add(new double[]{pnl / (capital - pnl)});
-                    openTrade = null;
+                    openPos = null;
                 }
             }
 
@@ -430,7 +433,7 @@ public class BacktestingService {
             TechnicalIndicator indicators = approximateIndicators(window, instrument);
 
             // Generate signals only when no open position
-            if (openTrade == null) {
+            if (openPos == null) {
                 List<TradeSignal> signals = strategy.generateSignals(window, indicators);
                 if (!signals.isEmpty()) {
                     TradeSignal sig = signals.getFirst();
@@ -443,17 +446,16 @@ public class BacktestingService {
                     totalCommission += entryComm * qty;
 
                     if (totalCost <= capital) {
-                        openTrade = BacktestTrade.builder()
+                        BacktestTrade newTrade = BacktestTrade.builder()
                                 .backtestResult(result)
                                 .instrument(instrument)
                                 .entryDate(bar.getTimestamp().toLocalDate())
                                 .entryPrice(bd(adjEntry))
-                                .exitPrice(bd(sig.targetPrice()))   // temp: store target as exitPrice
                                 .quantity(qty)
                                 .direction(sig.isBullish() ? TradeDirection.LONG : TradeDirection.SHORT)
-                                .stoploss(bd(sig.stopLoss()))
                                 .signalType(sig.type())
                                 .build();
+                        openPos = new OpenPosition(newTrade, sig.targetPrice(), sig.stopLoss());
                     }
                 }
             }
@@ -475,7 +477,8 @@ public class BacktestingService {
         }
 
         // Close any still-open trade at last bar close
-        if (openTrade != null && !allData.isEmpty()) {
+        if (openPos != null && !allData.isEmpty()) {
+            BacktestTrade openTrade = openPos.trade();
             MarketData lastBar = allData.getLast();
             double closePrice = lastBar.getClose().doubleValue();
             double pnl = openTrade.isLong()

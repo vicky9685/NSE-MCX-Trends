@@ -60,7 +60,7 @@ public class PaperTradingController {
         }
 
         try {
-            TradingProperties.PaperTrading cfg = paperTradingService.getPaperTradingConfig();
+            TradingProperties.PaperTrading cfg = tradingProperties.paperTrading();
             PaperTrade trade = paperTradingService.openPosition(signal, sessionId, cfg);
             if (trade == null) {
                 return ResponseEntity.ok(ApiResponse.error(

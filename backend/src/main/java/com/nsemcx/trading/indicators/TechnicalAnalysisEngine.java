@@ -493,16 +493,19 @@ public class TechnicalAnalysisEngine {
                 return new CandlePattern.ThreeBlackCrows(avgBody);
             }
 
+            double p1High = prev1.getHigh().doubleValue();
+            double p1Low  = prev1.getLow().doubleValue();
+
             // Morning Star: bearish, small body (star), bullish
-            if (p2Close < p2Open && Math.abs(p1Close - p1Open) / (p1.getHigh().doubleValue() - p1.getLow().doubleValue()) < 0.2
+            if (p2Close < p2Open && Math.abs(p1Close - p1Open) / (p1High - p1Low + 0.0001) < 0.2
                     && close > open && close > (p2Open + p2Close) / 2) {
-                return new CandlePattern.MorningStar(p2Close - p1.getHigh().doubleValue(), p1.getLow().doubleValue() - open);
+                return new CandlePattern.MorningStar(p2Close - p1High, p1Low - open);
             }
 
             // Evening Star: bullish, small body (star), bearish
-            if (p2Close > p2Open && Math.abs(p1Close - p1Open) / (p1.getHigh().doubleValue() - p1.getLow().doubleValue()) < 0.2
+            if (p2Close > p2Open && Math.abs(p1Close - p1Open) / (p1High - p1Low + 0.0001) < 0.2
                     && close < open && close < (p2Open + p2Close) / 2) {
-                return new CandlePattern.EveningStar(p1.getLow().doubleValue() - p2Close, open - p1.getHigh().doubleValue());
+                return new CandlePattern.EveningStar(p1Low - p2Close, open - p1High);
             }
         }
 
