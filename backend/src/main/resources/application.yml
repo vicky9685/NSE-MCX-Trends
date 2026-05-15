@@ -183,6 +183,41 @@ trading:
     default-risk-percent: 2.0
     max-portfolio-risk: 10.0
     var-confidence: 0.95
+    max-single-position-percent: 5.0
+    overnight-gap-risk-percent: 2.0
+  scheduler:
+    historical-cron: "0 30 6 * * MON-FRI"
+    technical-rate-ms: 900000
+    signal-rate-ms: 1800000
+    alert-rate-ms: 60000
+    paper-rate-ms: 60000
+    forward-test-eval-cron: "0 0 18 * * MON-FRI"
+  backtesting:
+    default-capital: 1000000.0
+    commission-percent: 0.03
+    slippage-percent: 0.01
+    max-drawdown-limit: 20.0
+    default-start-days-back: 365
+  paper-trading:
+    enabled: true
+    initial-capital: 1000000.0
+    max-positions: 10
+    max-capital-per-trade: 10.0
+    commission-percent: 0.03
+    auto-execute-signals: false
+    min-confidence-to-execute: 70.0
+  forward-testing:
+    enabled: true
+    look-ahead-days: 5
+    min-confidence-to-record: 60.0
+  analysis:
+    fundamental-weight: 0.60
+    macro-weight: 0.20
+    technical-weight: 0.20
+    min-signal-confidence: 55.0
+    top-picks-count: 5
+    mcx-picks-count: 3
+    options-setups-count: 3
   instruments:
     nse:
       - RELIANCE.NS
@@ -191,11 +226,41 @@ trading:
       - INFY.NS
       - ICICIBANK.NS
       - SBIN.NS
+      - KOTAKBANK.NS
+      - AXISBANK.NS
+      - WIPRO.NS
+      - HCLTECH.NS
+      - SUNPHARMA.NS
+      - MARUTI.NS
+      - TATAMOTORS.NS
+      - BAJFINANCE.NS
+      - BHARTIARTL.NS
+      - HINDUNILVR.NS
+      - ITC.NS
+      - TATASTEEL.NS
+      - LT.NS
+      - NTPC.NS
       - ^NSEI
       - ^NSEBANK
+      - NIFTY_FIN_SERVICE.NS
     mcx:
       - GC=F
       - SI=F
       - CL=F
       - NG=F
       - HG=F
+    sectors:
+      - BANKING
+      - IT
+      - OIL_GAS
+      - AUTO
+      - PHARMA
+      - FMCG
+      - METALS
+      - INFRA
+      - TELECOM
+      - REALTY
+      - HEALTHCARE
+      - CEMENT
+      - CHEMICALS
+      - RETAIL

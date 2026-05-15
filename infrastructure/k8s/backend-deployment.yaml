@@ -1,0 +1,284 @@
+---
+# Secret for backend application credentials
+# In production: replace with ExternalSecret (external-secrets-operator) or Sealed Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+  namespace: trading
+  labels:
+    app: backend
+    app.kubernetes.io/name: nse-mcx-backend
+    app.kubernetes.io/component: api
+type: Opaque
+stringData:
+  JWT_SECRET: "changeme_to_a_very_long_random_string_at_least_64_characters_long_for_security"
+  POSTGRES_PASSWORD: "changeme_strong_db_password_32chars"
+  REDIS_PASSWORD: "changeme_redis_password"
+  BROKER_ZERODHA_API_KEY: ""
+  BROKER_ZERODHA_API_SECRET: ""
+  BROKER_ZERODHA_ACCESS_TOKEN: ""
+  BROKER_ALICEBLUE_API_KEY: ""
+  BROKER_ALICEBLUE_USER_ID: ""
+  BROKER_ALICEBLUE_API_SECRET: ""
+  BROKER_BONANZA_API_KEY: ""
+  BROKER_BONANZA_API_SECRET: ""
+  YAHOO_FINANCE_API_KEY: ""
+---
+# ConfigMap for non-sensitive backend configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: trading
+  labels:
+    app: backend
+    app.kubernetes.io/name: nse-mcx-backend
+data:
+  SPRING_PROFILES_ACTIVE: "kubernetes"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/trading_db"
+  SPRING_DATASOURCE_USERNAME: "trading_user"
+  SPRING_REDIS_HOST: "redis"
+  SPRING_REDIS_PORT: "6379"
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+  OLLAMA_BASE_URL: "http://ollama:11434"
+  OLLAMA_MODEL: "llama3.2"
+  JWT_EXPIRATION_MS: "86400000"
+  CORS_ORIGINS: "https://trading.yourdomain.com"
+  NSE_DATA_API_URL: "https://www.nseindia.com/api"
+  JAVA_OPTS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UseZGC -XX:+ZGenerational -Dspring.threads.virtual.enabled=true -Djava.net.preferIPv4Stack=true -Duser.timezone=Asia/Kolkata"
+  SERVER_PORT: "8080"
+---
+# HorizontalPodAutoscaler for backend
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: trading
+  labels:
+    app: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+---
+# PodDisruptionBudget: ensure ≥1 pod always available
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend-pdb
+  namespace: trading
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: backend
+---
+# Backend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: trading
+  labels:
+    app: backend
+    app.kubernetes.io/name: nse-mcx-backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/version: "latest"
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        app.kubernetes.io/name: nse-mcx-backend
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      terminationGracePeriodSeconds: 60
+      serviceAccountName: default
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgres 5432; do
+                echo "Waiting for PostgreSQL..."
+                sleep 3
+              done
+              echo "PostgreSQL is ready."
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka 29092; do
+                echo "Waiting for Kafka..."
+                sleep 3
+              done
+              echo "Kafka is ready."
+      containers:
+        - name: backend
+          image: nse-mcx-backend:latest   # update to your registry/image:tag
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: backend-config
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: JWT_SECRET
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: POSTGRES_PASSWORD
+            - name: SPRING_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: REDIS_PASSWORD
+            - name: BROKER_ZERODHA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: BROKER_ZERODHA_API_KEY
+            - name: BROKER_ZERODHA_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: BROKER_ZERODHA_API_SECRET
+            - name: BROKER_ZERODHA_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: BROKER_ZERODHA_ACCESS_TOKEN
+            - name: BROKER_ALICEBLUE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: BROKER_ALICEBLUE_API_KEY
+            - name: BROKER_ALICEBLUE_USER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: BROKER_ALICEBLUE_USER_ID
+            - name: BROKER_ALICEBLUE_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: BROKER_ALICEBLUE_API_SECRET
+            - name: YAHOO_FINANCE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: YAHOO_FINANCE_API_KEY
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "3Gi"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+            successThreshold: 1
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+---
+# ClusterIP Service for backend
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: trading
+  labels:
+    app: backend
+    app.kubernetes.io/name: nse-mcx-backend
+    app.kubernetes.io/component: api
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - port: 8080
+      targetPort: http
+      name: http
+      protocol: TCP

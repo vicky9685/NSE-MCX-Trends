@@ -1,0 +1,49 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trading
+  labels:
+    app.kubernetes.io/name: nse-mcx-trends
+    app.kubernetes.io/managed-by: kubectl
+    environment: production
+  annotations:
+    description: "NSE-MCX-Trends trading platform namespace"
+---
+# ResourceQuota: prevent runaway resource usage
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: trading-quota
+  namespace: trading
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    pods: "50"
+    services: "20"
+    persistentvolumeclaims: "10"
+---
+# LimitRange: default container limits if not specified
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: trading-limits
+  namespace: trading
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "4"
+        memory: "8Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"

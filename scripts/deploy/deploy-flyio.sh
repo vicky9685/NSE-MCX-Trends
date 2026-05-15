@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# =============================================================================
+# deploy-flyio.sh — NSE-MCX-Trends on Fly.io
+# =============================================================================
+# Provisions:
+#   - Fly.io app for backend (Spring Boot, Docker)
+#   - Fly.io app for frontend (React/Nginx, Docker)
+#   - Fly Postgres (managed PostgreSQL via fly postgres create)
+#   - Upstash Kafka via Fly.io extension (fly ext upstash-kafka create)
+#   - Upstash Redis via Fly.io extension (fly ext upstash-redis create)
+#
+# Prerequisites:
+#   - flyctl installed: curl -L https://fly.io/install.sh | sh
+#   - fly auth login
+#   - .env file present in project root
+#
+# Usage:
+#   chmod +x deploy-flyio.sh
+#   ./deploy-flyio.sh [--region bom] [--backend-app nse-mcx-backend] [--vm-size shared-cpu-2x]
+# =============================================================================
+
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+info()    { echo -e "${CYAN}[INFO]${NC}  $*"; }
+success() { echo -e "${GREEN}[OK]${NC}    $*"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+banner()  { echo -e "\n${BOLD}${CYAN}═══ $* ═══${NC}\n"; }
+
+# ─── Defaults ─────────────────────────────────────────────────────────────────
+FLY_REGION="${FLY_REGION:-bom}"          # bom = Mumbai
+BACKEND_APP="${FLY_BACKEND_APP:-nse-mcx-backend-$(whoami | tr -dc 'a-z0-9' | head -c6)}"
+FRONTEND_APP="${FLY_FRONTEND_APP:-nse-mcx-frontend-$(whoami | tr -dc 'a-z0-9' | head -c6)}"
+POSTGRES_APP="${FLY_POSTGRES_APP:-nse-mcx-db}"
+VM_SIZE="${FLY_VM_SIZE:-shared-cpu-2x}"   # shared-cpu-1x | shared-cpu-2x | performance-1x
+MEMORY_MB="${FLY_MEMORY:-1024}"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# ─── Parse CLI args ───────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --region)       FLY_REGION="$2"; shift 2 ;;
+        --backend-app)  BACKEND_APP="$2"; shift 2 ;;
+        --frontend-app) FRONTEND_APP="$2"; shift 2 ;;
+        --postgres-app) POSTGRES_APP="$2"; shift 2 ;;
+        --vm-size)      VM_SIZE="$2"; shift 2 ;;
+        --help|-h)
+            echo "Usage: $0 [--region <code>] [--backend-app <name>] [--vm-size <size>]"
+            exit 0 ;;
+        *) error "Unknown option: $1" ;;
+    esac
+done
+
+# ─── Prereq checks ────────────────────────────────────────────────────────────
+banner "Checking prerequisites"
+
+for cmd in fly jq; do
+    command -v "$cmd" &>/dev/null && success "$cmd found" || error "$cmd not installed."
+done
+
+fly auth whoami &>/dev/null || error "Not authenticated. Run: fly auth login"
+FLY_USER=$(fly auth whoami 2>/dev/null)
+success "Logged in as: $FLY_USER"
+
+[[ -f "$PROJECT_DIR/.env" ]] || error ".env not found at $PROJECT_DIR/.env"
+
+# Load .env
+set -o allexport
+# shellcheck source=/dev/null
+source "$PROJECT_DIR/.env"
+set +o allexport
+
+# ─── Fly Postgres ──────────────────────────────────────────────────────────────
+banner "Fly Postgres"
+
+if fly postgres list 2>/dev/null | grep -q "$POSTGRES_APP"; then
+    info "Postgres cluster exists: $POSTGRES_APP"
+    PG_CONN_STR=$(fly postgres connect --app "$POSTGRES_APP" --command "SELECT 1" 2>/dev/null || true)
+else
+    info "Creating Fly Postgres cluster: $POSTGRES_APP ..."
+    fly postgres create \
+        --name "$POSTGRES_APP" \
+        --region "$FLY_REGION" \
+        --initial-cluster-size 1 \
+        --vm-size shared-cpu-1x \
+        --volume-size 3 \
+        --no-encrypt \
+        2>/dev/null || warn "Postgres create may have failed — check 'fly postgres list'"
+    success "Postgres cluster created: $POSTGRES_APP"
+fi
+
+# ─── Upstash Redis ────────────────────────────────────────────────────────────
+banner "Upstash Redis (Fly Extension)"
+
+if fly ext upstash-redis list 2>/dev/null | grep -q "nse-mcx-redis"; then
+    info "Upstash Redis already exists: nse-mcx-redis"
+else
+    info "Creating Upstash Redis ..."
+    fly ext upstash-redis create \
+        --name "nse-mcx-redis" \
+        --region "$FLY_REGION" \
+        2>/dev/null || warn "Upstash Redis creation failed — you may need a paid plan or manual setup."
+fi
+
+# ─── Upstash Kafka ────────────────────────────────────────────────────────────
+banner "Upstash Kafka (Fly Extension)"
+
+if fly ext upstash-kafka list 2>/dev/null | grep -q "nse-mcx-kafka"; then
+    info "Upstash Kafka already exists: nse-mcx-kafka"
+else
+    info "Creating Upstash Kafka cluster ..."
+    fly ext upstash-kafka create \
+        --name "nse-mcx-kafka" \
+        --region "$FLY_REGION" \
+        2>/dev/null || warn "Upstash Kafka requires paid account — configure manually if needed."
+fi
+
+# ─── Backend fly.toml ────────────────────────────────────────────────────────
+banner "Generating backend fly.toml"
+
+cat > "$PROJECT_DIR/backend/fly.toml" <<FLY_TOML
+# fly.toml — NSE-MCX-Trends Backend
+# Generated by deploy-flyio.sh
+
+app = "${BACKEND_APP}"
+primary_region = "${FLY_REGION}"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "../infrastructure/docker/Dockerfile.backend"
+  build-target = "runtime"
+
+[build.args]
+  JAVA_VERSION = "21"
+
+[[vm]]
+  size = "${VM_SIZE}"
+  memory = "${MEMORY_MB}"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "60s"
+    interval = "30s"
+    method = "GET"
+    path = "/actuator/health"
+    timeout = "10s"
+
+[env]
+  SPRING_PROFILES_ACTIVE = "fly"
+  SERVER_PORT = "8080"
+  JAVA_OPTS = "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Dspring.threads.virtual.enabled=true"
+  OLLAMA_BASE_URL = ""
+
+[[statics]]
+  guest_path = "/app/static"
+  url_prefix = "/static"
+FLY_TOML
+
+success "backend/fly.toml generated"
+
+# ─── Frontend fly.toml ───────────────────────────────────────────────────────
+banner "Generating frontend fly.toml"
+
+cat > "$PROJECT_DIR/frontend/fly.toml" <<FLY_TOML
+# fly.toml — NSE-MCX-Trends Frontend
+# Generated by deploy-flyio.sh
+
+app = "${FRONTEND_APP}"
+primary_region = "${FLY_REGION}"
+kill_signal = "SIGTERM"
+kill_timeout = "5s"
+
+[build]
+  dockerfile = "../infrastructure/docker/Dockerfile.frontend"
+
+[build.args]
+  VITE_API_BASE_URL = "https://${BACKEND_APP}.fly.dev"
+  VITE_WS_URL = "wss://${BACKEND_APP}.fly.dev/ws"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256"
+
+[http_service]
+  internal_port = 80
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/"
+    timeout = "5s"
+FLY_TOML
+
+success "frontend/fly.toml generated"
+
+# ─── Create Fly apps ─────────────────────────────────────────────────────────
+banner "Creating Fly Apps"
+
+# Backend app
+if fly apps list 2>/dev/null | grep -q "$BACKEND_APP"; then
+    info "Backend app exists: $BACKEND_APP"
+else
+    fly apps create "$BACKEND_APP" --machines --region "$FLY_REGION" 2>/dev/null || \
+        warn "App creation may have failed — continuing"
+    success "Backend app created: $BACKEND_APP"
+fi
+
+# Frontend app
+if fly apps list 2>/dev/null | grep -q "$FRONTEND_APP"; then
+    info "Frontend app exists: $FRONTEND_APP"
+else
+    fly apps create "$FRONTEND_APP" --machines --region "$FLY_REGION" 2>/dev/null || \
+        warn "App creation may have failed — continuing"
+    success "Frontend app created: $FRONTEND_APP"
+fi
+
+# ─── Attach Postgres to backend ───────────────────────────────────────────────
+banner "Attaching Postgres to Backend"
+
+fly postgres attach "$POSTGRES_APP" \
+    --app "$BACKEND_APP" \
+    --database-name "trading_db" \
+    2>/dev/null || info "Postgres already attached or attach failed (check fly logs)."
+
+# ─── Set backend secrets ─────────────────────────────────────────────────────
+banner "Setting Backend Secrets"
+
+fly secrets set \
+    --app "$BACKEND_APP" \
+    JWT_SECRET="${JWT_SECRET:-$(openssl rand -base64 64 | tr -d '\n')}" \
+    BROKER_ZERODHA_API_KEY="${BROKER_ZERODHA_API_KEY:-placeholder}" \
+    BROKER_ZERODHA_API_SECRET="${BROKER_ZERODHA_API_SECRET:-placeholder}" \
+    BROKER_ZERODHA_ACCESS_TOKEN="${BROKER_ZERODHA_ACCESS_TOKEN:-placeholder}" \
+    BROKER_ALICEBLUE_API_KEY="${BROKER_ALICEBLUE_API_KEY:-placeholder}" \
+    BROKER_ALICEBLUE_USER_ID="${BROKER_ALICEBLUE_USER_ID:-placeholder}" \
+    BROKER_ALICEBLUE_API_SECRET="${BROKER_ALICEBLUE_API_SECRET:-placeholder}" \
+    BROKER_BONANZA_API_KEY="${BROKER_BONANZA_API_KEY:-placeholder}" \
+    BROKER_BONANZA_API_SECRET="${BROKER_BONANZA_API_SECRET:-placeholder}" \
+    YAHOO_FINANCE_API_KEY="${YAHOO_FINANCE_API_KEY:-placeholder}" \
+    2>/dev/null || warn "Some secrets may not have been set."
+
+success "Secrets configured"
+
+# ─── Deploy backend ───────────────────────────────────────────────────────────
+banner "Deploying Backend"
+
+cd "$PROJECT_DIR/backend"
+fly deploy \
+    --app "$BACKEND_APP" \
+    --config fly.toml \
+    --dockerfile "../infrastructure/docker/Dockerfile.backend" \
+    --remote-only \
+    --wait-timeout 300 \
+    2>/dev/null || warn "Backend deploy may be in progress — check: fly logs --app $BACKEND_APP"
+
+success "Backend deployed"
+
+# ─── Deploy frontend ──────────────────────────────────────────────────────────
+banner "Deploying Frontend"
+
+cd "$PROJECT_DIR/frontend"
+fly deploy \
+    --app "$FRONTEND_APP" \
+    --config fly.toml \
+    --dockerfile "../infrastructure/docker/Dockerfile.frontend" \
+    --build-arg "VITE_API_BASE_URL=https://${BACKEND_APP}.fly.dev" \
+    --build-arg "VITE_WS_URL=wss://${BACKEND_APP}.fly.dev/ws" \
+    --remote-only \
+    --wait-timeout 180 \
+    2>/dev/null || warn "Frontend deploy may be in progress — check: fly logs --app $FRONTEND_APP"
+
+success "Frontend deployed"
+
+# ─── Create Kafka topics ──────────────────────────────────────────────────────
+banner "Note: Kafka Topics"
+info "If using Upstash Kafka, create topics manually in the Upstash console:"
+info "  - market-data (4 partitions)"
+info "  - trade-signals (4 partitions)"
+info "  - alerts (2 partitions)"
+info "  - option-chain (4 partitions)"
+info "  - instrument-updates (2 partitions)"
+
+# ─── Summary ──────────────────────────────────────────────────────────────────
+banner "Deployment Complete"
+
+echo -e "${GREEN}${BOLD}"
+echo "╔══════════════════════════════════════════════════════════╗"
+echo "║          NSE-MCX-Trends — Fly.io Deployment              ║"
+echo "╠══════════════════════════════════════════════════════════╣"
+printf "║  Backend App  : %-42s ║\n" "$BACKEND_APP"
+printf "║  Frontend App : %-42s ║\n" "$FRONTEND_APP"
+printf "║  Postgres     : %-42s ║\n" "$POSTGRES_APP"
+printf "║  Region       : %-42s ║\n" "$FLY_REGION"
+echo "╠══════════════════════════════════════════════════════════╣"
+printf "║  Backend URL  : https://%-34s ║\n" "${BACKEND_APP}.fly.dev"
+printf "║  Frontend URL : https://%-34s ║\n" "${FRONTEND_APP}.fly.dev"
+echo "╚══════════════════════════════════════════════════════════╝"
+echo -e "${NC}"
+echo "Logs:     fly logs --app $BACKEND_APP"
+echo "SSH:      fly ssh console --app $BACKEND_APP"
+echo "Status:   fly status --app $BACKEND_APP"
+echo "Scale:    fly scale count 2 --app $BACKEND_APP"

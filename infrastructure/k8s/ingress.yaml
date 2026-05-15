@@ -1,0 +1,129 @@
+---
+# TLS Secret placeholder — replace with your actual cert or use cert-manager
+# To use cert-manager: add cert-manager.io/cluster-issuer annotation below
+# and remove this Secret; cert-manager will auto-provision it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nse-mcx-tls
+  namespace: trading
+  labels:
+    app.kubernetes.io/name: nse-mcx-trends
+    app.kubernetes.io/component: tls
+type: kubernetes.io/tls
+data:
+  # Replace with base64-encoded actual certificate and key
+  # Generate self-signed for testing:
+  #   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  #     -keyout tls.key -out tls.crt -subj "/CN=trading.yourdomain.com"
+  #   kubectl create secret tls nse-mcx-tls --cert=tls.crt --key=tls.key -n trading
+  tls.crt: ""
+  tls.key: ""
+---
+# Ingress — nginx ingress controller
+# Install: helm install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --create-namespace
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nse-mcx-ingress
+  namespace: trading
+  labels:
+    app.kubernetes.io/name: nse-mcx-trends
+    app.kubernetes.io/component: ingress
+  annotations:
+    # nginx ingress controller
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+
+    # WebSocket support for /ws
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+
+    # Gzip compression
+    nginx.ingress.kubernetes.io/enable-compression: "true"
+
+    # SSL redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # HSTS
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+    nginx.ingress.kubernetes.io/hsts-include-subdomains: "true"
+
+    # Rate limiting (optional — protect API endpoints)
+    # nginx.ingress.kubernetes.io/limit-rps: "30"
+    # nginx.ingress.kubernetes.io/limit-connections: "10"
+
+    # cert-manager: uncomment to auto-provision TLS certificates
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - trading.yourdomain.com
+        - api.trading.yourdomain.com
+      secretName: nse-mcx-tls
+  rules:
+    # ── Frontend (React SPA) ─────────────────────────────────────────────────
+    - host: trading.yourdomain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  name: http
+
+    # ── Backend API and WebSocket ────────────────────────────────────────────
+    - host: api.trading.yourdomain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  name: http
+---
+# IngressClass (if not already created by nginx ingress installation)
+# Uncomment if needed:
+# apiVersion: networking.k8s.io/v1
+# kind: IngressClass
+# metadata:
+#   name: nginx
+#   annotations:
+#     ingressclass.kubernetes.io/is-default-class: "true"
+# spec:
+#   controller: k8s.io/ingress-nginx
+---
+# ConfigMap for nginx ingress controller: enable WebSocket connection upgrades
+# Apply to the ingress-nginx namespace where the controller lives
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-ingress-configuration
+  namespace: trading
+  labels:
+    app.kubernetes.io/name: nse-mcx-trends
+    app.kubernetes.io/component: ingress-config
+data:
+  # Enable WebSocket connection upgrades globally
+  map-hash-bucket-size: "128"
+  # Additional nginx settings for trading workloads
+  worker-processes: "auto"
+  max-worker-connections: "65536"
+  keep-alive: "75"
+  keep-alive-requests: "1000"
+  upstream-keepalive-connections: "32"
+  upstream-keepalive-time: "1h"
+  proxy-buffer-size: "8k"
+  proxy-buffers-number: "16"
